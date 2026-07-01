@@ -12,8 +12,9 @@ import os
 import sys
 
 class NigerianAccountBot:
-    def __init__(self, start_code=41140):
+    def __init__(self, start_code=101621):
         self.current_code = start_code
+        self.step_size = 1  # ← CHANGED TO +1
         self.created_accounts = []
         self.account_counter = 0
         self.nigerian_prefixes = ['080', '081', '090', '091', '070', '071']
@@ -21,7 +22,8 @@ class NigerianAccountBot:
         self.current_password = None
         self.last_result = "Waiting to start..."
         self.consecutive_failures = 0
-        self.max_failures = 5  # Stop if 5 consecutive failures
+        self.max_failures = 5
+        self.max_retries = 3
 
         options = Options()
         options.add_argument("--headless=new")
@@ -85,20 +87,29 @@ class NigerianAccountBot:
             return False
 
     def wait_for_page_load(self, timeout=15):
-        """Wait for page to be fully loaded"""
         try:
             wait = WebDriverWait(self.driver, timeout)
             wait.until(lambda driver: driver.execute_script("return document.readyState") == "complete")
-            time.sleep(2)  # Extra wait for dynamic content
+            time.sleep(2)
             return True
         except:
             return False
 
+    def safe_find_element(self, by, selector, timeout=10):
+        for attempt in range(self.max_retries):
+            try:
+                wait = WebDriverWait(self.driver, timeout)
+                return wait.until(EC.presence_of_element_located((by, selector)))
+            except Exception as e:
+                print(f"   ⚠️ Attempt {attempt + 1} failed: {e}")
+                time.sleep(1)
+                if attempt == self.max_retries - 1:
+                    raise
+        return None
+
     def fill_form_once(self):
         try:
-            # Wait for page to be ready
             self.wait_for_page_load()
-            
             wait = WebDriverWait(self.driver, 15)
             
             self.current_phone = self.generate_nigerian_phone()
@@ -107,17 +118,14 @@ class NigerianAccountBot:
             print(f"\n📱 Phone: {self.current_phone}")
             print(f"🔒 Password: {self.current_password}")
 
-            # Find and fill phone
             phone_field = wait.until(EC.presence_of_element_located((By.XPATH, self.selectors['phone'])))
             self.clear_field(phone_field)
             phone_field.send_keys(self.current_phone)
 
-            # Fill password
             password_field = wait.until(EC.presence_of_element_located((By.XPATH, self.selectors['password'])))
             self.clear_field(password_field)
             password_field.send_keys(self.current_password)
 
-            # Fill confirm password
             confirm_field = wait.until(EC.presence_of_element_located((By.XPATH, self.selectors['confirm_password'])))
             self.clear_field(confirm_field)
             confirm_field.send_keys(self.current_password)
@@ -133,13 +141,12 @@ class NigerianAccountBot:
     def update_invitation_code(self, code):
         try:
             formatted_code = self.format_code(code)
-            
-            # Wait for the page to be ready
             self.wait_for_page_load()
             
-            # Wait for the code field to be present
-            wait = WebDriverWait(self.driver, 10)
-            code_field = wait.until(EC.presence_of_element_located((By.XPATH, self.selectors['invitation_code'])))
+            code_field = self.safe_find_element(By.XPATH, self.selectors['invitation_code'])
+            if not code_field:
+                print(f"   ❌ Code field not found")
+                return False
             
             self.clear_field(code_field)
             code_field.send_keys(formatted_code)
@@ -151,29 +158,25 @@ class NigerianAccountBot:
 
     def click_register_button(self):
         try:
-            # Wait for button to be clickable
             wait = WebDriverWait(self.driver, 10)
             
-            # Try different selectors
-            try:
-                button = wait.until(EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'Register now')]")))
-                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
-                time.sleep(0.5)
-                self.driver.execute_script("arguments[0].click();", button)
-                print("   ✅ Clicked Register!")
-                return True
-            except:
-                pass
+            selectors = [
+                "//*[contains(text(), 'Register now')]",
+                "//button[contains(text(), 'Register')]",
+                "//button[@type='submit']",
+                "//input[@type='submit']"
+            ]
             
-            try:
-                button = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Register')]")))
-                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
-                time.sleep(0.5)
-                self.driver.execute_script("arguments[0].click();", button)
-                print("   ✅ Clicked Register!")
-                return True
-            except:
-                pass
+            for selector in selectors:
+                try:
+                    button = wait.until(EC.element_to_be_clickable((By.XPATH, selector)))
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
+                    time.sleep(0.5)
+                    self.driver.execute_script("arguments[0].click();", button)
+                    print("   ✅ Clicked Register!")
+                    return True
+                except:
+                    continue
             
             try:
                 form = self.driver.find_element(By.TAG_NAME, "form")
@@ -194,23 +197,19 @@ class NigerianAccountBot:
         try:
             page_source = self.driver.page_source.lower()
             
-            # SUCCESS: Important Notice
             if "important notice" in page_source:
                 self.last_result = "✅ SUCCESS! Important Notice found"
                 self.take_screenshot("success_important_notice")
                 return True
-            
             if "limited-time free upgrade" in page_source:
                 self.last_result = "✅ SUCCESS! Free Upgrade found"
                 self.take_screenshot("success_free_upgrade")
                 return True
             
-            # FAILURE: Upgrade message
             if "please upgrade your level" in page_source or "upgrade your level" in page_source:
                 self.last_result = "❌ Upgrade message - code failed"
                 return False
             
-            # Other success indicators
             success_words = [
                 "cooperative wealth zone", "deposit principal", "invite newcomers",
                 "wealth center", "wish book", "surprise code", "benefit savings",
@@ -232,22 +231,17 @@ class NigerianAccountBot:
 
     def attempt_creation(self, code):
         try:
-            # Update code - wait for page first
             if not self.update_invitation_code(code):
                 return False, None
             
-            # Wait before clicking
             time.sleep(0.5)
             
-            # Click Register
             if not self.click_register_button():
                 return False, None
             
-            # WAIT FOR PAGE TO RESPOND (CRITICAL)
             time.sleep(4)
             self.wait_for_page_load()
             
-            # Check if success
             if self.check_success():
                 account_info = {
                     'phone': self.current_phone,
@@ -258,25 +252,22 @@ class NigerianAccountBot:
                 self.save_account(account_info)
                 print(f"   ✅✅✅ SUCCESS! Account created with code: {self.format_code(code)}")
                 self.last_result = f"✅ SUCCESS! Code {self.format_code(code)} worked!"
-                self.consecutive_failures = 0  # Reset failure counter
+                self.consecutive_failures = 0
                 return True, account_info
             
-            # Failed
             self.consecutive_failures += 1
             return False, None
             
         except Exception as e:
             print(f"   ⚠️ Error in attempt: {e}")
             self.consecutive_failures += 1
-            time.sleep(3)  # Wait longer after error
+            time.sleep(3)
             return False, None
 
     def create_one_account(self):
         print("\n" + "="*50)
         print(f"🆕 Account #{self.account_counter + 1}")
         print(f"Starting code: {self.format_code(self.current_code)}")
-        
-        # Reset failure counter for this account
         self.consecutive_failures = 0
 
         if not self.fill_form_once():
@@ -284,7 +275,7 @@ class NigerianAccountBot:
             return False
 
         attempts = 0
-        max_tries = 15
+        max_tries = 10
 
         while attempts < max_tries and self.consecutive_failures < self.max_failures:
             code = self.current_code
@@ -299,25 +290,19 @@ class NigerianAccountBot:
                 print(f"   🔑 Password: {account['password']}")
                 print(f"   🎯 Invitation Code: {account['invitation_code']}")
                 
-                # Logout
                 self.logout()
-                
-                # Go back to register page
                 self.go_to_register_page()
                 
-                # Move to next code
-                self.current_code = code + 1
+                # ← ADD +1 HERE (STEP SIZE)
+                self.current_code = code + self.step_size
                 self.account_counter += 1
                 print(f"📊 Accounts created: {self.account_counter}")
                 print(f"➡️  Next code: {self.format_code(self.current_code)}")
-                
                 return True
 
             print(f"❌ ({self.consecutive_failures}/{self.max_failures} failures)")
-            self.current_code = code + 1
+            self.current_code = code + self.step_size
             attempts += 1
-            
-            # Wait between attempts
             time.sleep(1)
 
         if self.consecutive_failures >= self.max_failures:
@@ -349,11 +334,12 @@ class NigerianAccountBot:
             print(f"   ⚠️ Navigation error: {e}")
             return False
 
-    def run(self, url, num_accounts=3):
+    def run(self, url, num_accounts=1):
         print("="*60)
-        print("🇳🇬 NIGERIAN ACCOUNT CREATION BOT (FIXED)")
+        print("🇳🇬 NIGERIAN ACCOUNT CREATION BOT")
         print(f"Starting code: {self.format_code(self.current_code)}")
-        print(f"Target: {num_accounts} accounts")
+        print(f"Step size: +{self.step_size}")
+        print(f"Target: {num_accounts} accounts this run")
         print("="*60)
 
         try:
@@ -372,7 +358,6 @@ class NigerianAccountBot:
 
             if not success:
                 print(f"⚠️ Failed to create account #{i + 1}")
-                # Try to recover
                 self.driver.get("https://nnnrc.com/#/register")
                 self.wait_for_page_load()
                 time.sleep(2)
@@ -388,6 +373,8 @@ class NigerianAccountBot:
         print("\nAccount details:")
         for idx, acc in enumerate(self.created_accounts, 1):
             print(f"   #{idx}: Code: {acc['invitation_code']} | Phone: {acc['phone']} | Password: {acc['password']}")
+        print("="*60)
+        print(f"➡️  Next run will start from: {self.format_code(self.current_code)}")
         print("="*60)
         
         self.take_screenshot("final")
@@ -409,11 +396,11 @@ class NigerianAccountBot:
         print(f"   💾 Saved to accounts.csv")
 
 # ============================================
-# RUN THE BOT
+# RUN THE BOT (START: 0101621, STEP: +1)
 # ============================================
 
 target_url = "https://nnnrc.com/#/register"
-NUM_ACCOUNTS = 3  # Start with 5 for testing
+NUM_ACCOUNTS = 3
 
-bot = NigerianAccountBot(start_code=1104386)
+bot = NigerianAccountBot(start_code=1104386)  # ← START FROM 0101621
 bot.run(target_url, num_accounts=NUM_ACCOUNTS)
